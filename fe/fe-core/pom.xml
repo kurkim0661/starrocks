@@ -513,6 +513,13 @@ under the License.
             <artifactId>hive-apache</artifactId>
         </dependency>
 
+        <!-- https://mvnrepository.com/artifact/org.apache.hive/hive-jdbc -->
+        <!-- Required for Spark Thrift Server metastore connection -->
+        <dependency>
+            <groupId>org.apache.hive</groupId>
+            <artifactId>hive-jdbc</artifactId>
+        </dependency>
+
         <!-- https://mvnrepository.com/artifact/com.aliyun.datalake/metastore-client-hive3 -->
         <dependency>
             <groupId>com.aliyun.datalake</groupId>

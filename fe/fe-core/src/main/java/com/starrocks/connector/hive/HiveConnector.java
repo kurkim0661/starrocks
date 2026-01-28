@@ -32,6 +32,14 @@ public class HiveConnector implements Connector {
     public static final String HIVE_METASTORE_TYPE = "hive.metastore.type";
     public static final String HIVE_METASTORE_TIMEOUT = "hive.metastore.timeout";
     public static final String HIVE_METASTORE_CONNECTION_POOL_SIZE = "hive.metastore.connection.pool.size";
+
+    // Spark Thrift Server configuration constants
+    public static final String SPARK_THRIFT_SERVER_JDBC_URL = "spark.thrift.server.jdbc.url";
+    public static final String SPARK_THRIFT_SERVER_USERNAME = "spark.thrift.server.username";
+    public static final String SPARK_THRIFT_SERVER_PASSWORD = "spark.thrift.server.password";
+    public static final String SPARK_THRIFT_SERVER_TIMEOUT = "spark.thrift.server.timeout";
+    public static final String SPARK_THRIFT_SERVER_CONNECTION_POOL_SIZE = "spark.thrift.server.connection.pool.size";
+
     private final Map<String, String> properties;
     private final String catalogName;
     private final CatalogNameType catalogNameType;

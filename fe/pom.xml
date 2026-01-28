@@ -799,6 +799,33 @@ under the License.
                 </exclusions>
             </dependency>
 
+            <!-- https://mvnrepository.com/artifact/org.apache.hive/hive-jdbc -->
+            <!-- Required for Spark Thrift Server metastore connection -->
+            <dependency>
+                <groupId>org.apache.hive</groupId>
+                <artifactId>hive-jdbc</artifactId>
+                <version>${hive-apache.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.apache.parquet</groupId>
+                        <artifactId>*</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.avro</groupId>
+                        <artifactId>*</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.hadoop</groupId>
+                        <artifactId>*</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>*</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+
             <dependency>
                 <groupId>com.aliyun</groupId>
                 <artifactId>datalake20200710</artifactId>

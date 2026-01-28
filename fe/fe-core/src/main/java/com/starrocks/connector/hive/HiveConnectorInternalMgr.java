@@ -38,7 +38,7 @@ import static com.starrocks.connector.hive.HiveConnector.HIVE_METASTORE_TYPE;
 import static com.starrocks.connector.hive.HiveConnector.HIVE_METASTORE_URIS;
 
 public class HiveConnectorInternalMgr {
-    public static final List<String> SUPPORTED_METASTORE_TYPE = Lists.newArrayList("hive", "glue", "dlf");
+    public static final List<String> SUPPORTED_METASTORE_TYPE = Lists.newArrayList("hive", "glue", "dlf", "spark");
     private final String catalogName;
     private final HdfsEnvironment hdfsEnvironment;
     private final Map<String, String> properties;
@@ -93,6 +93,11 @@ public class HiveConnectorInternalMgr {
             String hiveMetastoreUris = Preconditions.checkNotNull(properties.get(HIVE_METASTORE_URIS),
                     "%s must be set in properties when creating hive catalog", HIVE_METASTORE_URIS);
             Util.validateMetastoreUris(hiveMetastoreUris);
+        } else if (hiveMetastoreType.equals("spark")) {
+            // Validate Spark Thrift Server configuration
+            Preconditions.checkNotNull(properties.get(HiveConnector.SPARK_THRIFT_SERVER_JDBC_URL),
+                    "%s must be set in properties when creating spark metastore catalog",
+                    HiveConnector.SPARK_THRIFT_SERVER_JDBC_URL);
         }
         this.metastoreType = MetastoreType.get(hiveMetastoreType);
     }
@@ -114,8 +119,18 @@ public class HiveConnectorInternalMgr {
 
     public IHiveMetastore createHiveMetastore() {
         // TODO(stephen): Abstract the creator class to construct hive meta client
-        HiveMetaClient metaClient = HiveMetaClient.createHiveMetaClient(hdfsEnvironment, properties);
-        IHiveMetastore hiveMetastore = new HiveMetastore(metaClient, catalogName, metastoreType);
+        IHiveMetastore hiveMetastore;
+
+        // Handle Spark Thrift Server metastore separately
+        if (metastoreType == MetastoreType.SPARK) {
+            SparkThriftServerClient sparkClient = SparkThriftServerClient.create(properties);
+            hiveMetastore = new SparkThriftServerMetastore(sparkClient, catalogName);
+        } else {
+            // Traditional HMS, Glue, or DLF metastore
+            HiveMetaClient metaClient = HiveMetaClient.createHiveMetaClient(hdfsEnvironment, properties);
+            hiveMetastore = new HiveMetastore(metaClient, catalogName, metastoreType);
+        }
+
         IHiveMetastore baseHiveMetastore;
         if (!enableMetastoreCache) {
             baseHiveMetastore = hiveMetastore;

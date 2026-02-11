@@ -20,15 +20,20 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Table;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.metastore.MetastoreTable;
-import org.apache.hadoop.hive.metastore.api.Partition;
+import org.apache.hadoop.hive.metastore.api.SerDeInfo;
+import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.sql.SQLException;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -78,14 +83,9 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
         try (SparkThriftServerClient.PooledConnection conn = client.getConnection()) {
             String sql = String.format("DESCRIBE DATABASE EXTENDED %s", dbName);
             return conn.executeQuery(sql, rs -> {
-                org.apache.hadoop.hive.metastore.api.Database hiveDb = SparkThriftServerConverter.parseDatabase(dbName,
-                        rs);
-
-                // Convert Hive Database to StarRocks Database
-                Database starrocksDb = new Database();
-                starrocksDb.setName(hiveDb.getName());
-                starrocksDb.setComment(hiveDb.getDescription());
-                return starrocksDb;
+                org.apache.hadoop.hive.metastore.api.Database hiveDb =
+                        SparkThriftServerConverter.parseDatabase(dbName, rs);
+                return HiveMetastoreApiConverter.toDatabase(hiveDb, dbName);
             });
         } catch (SQLException e) {
             throw new StarRocksConnectorException(
@@ -96,7 +96,7 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
     @Override
     public MetastoreTable getMetastoreTable(String dbName, String tableName) {
         org.apache.hadoop.hive.metastore.api.Table hiveTable = getHiveTable(dbName, tableName);
-        return new MetastoreTable(hiveTable);
+        return HiveMetastoreApiConverter.toMetastoreTable(hiveTable);
     }
 
     @Override
@@ -112,10 +112,29 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
     @Override
     public Table getTable(String dbName, String tableName) {
         org.apache.hadoop.hive.metastore.api.Table hiveTable = getHiveTable(dbName, tableName);
-        // The conversion to StarRocks Table is handled by HiveMetadata
-        // We return the Hive API table wrapped in MetastoreTable
-        return null; // This method signature expects StarRocks Table, but we provide via
-                     // getMetastoreTable
+        StorageDescriptor sd = hiveTable.getSd();
+        if (sd == null) {
+            throw new StarRocksConnectorException("Table is missing storage descriptor");
+        }
+
+        normalizeHiveTableType(hiveTable);
+
+        if (HiveMetastoreApiConverter.isHudiTable(sd.getInputFormat())) {
+            return HiveMetastoreApiConverter.toHudiTable(hiveTable, catalogName);
+        } else if (HiveMetastoreApiConverter.isKuduTable(sd.getInputFormat())) {
+            return HiveMetastoreApiConverter.toKuduTable(hiveTable, catalogName);
+        } else {
+            HiveMetastoreApiConverter.validateHiveTableType(hiveTable.getTableType());
+            if (AcidUtils.isFullAcidTable(hiveTable)) {
+                throw new StarRocksConnectorException(String.format(
+                        "%s.%s is a hive transactional table(full acid), sr didn't support it yet", dbName, tableName));
+            }
+            if ("VIRTUAL_VIEW".equalsIgnoreCase(hiveTable.getTableType())) {
+                return HiveMetastoreApiConverter.toHiveView(hiveTable, catalogName);
+            } else {
+                return HiveMetastoreApiConverter.toHiveTable(hiveTable, catalogName);
+            }
+        }
     }
 
     /**
@@ -202,7 +221,7 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
                 partitionName.append(partKeys.get(i)).append("=").append(partitionValues.get(i));
             }
 
-            return SparkThriftServerConverter.createPartition(table, partitionName.toString());
+            return buildPartition(table, partitionName.toString());
         } catch (Exception e) {
             throw new StarRocksConnectorException(
                     String.format("Failed to get partition for %s.%s: %s",
@@ -215,10 +234,18 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
     public Map<String, Partition> getPartitionsByNames(String dbName, String tableName,
             List<String> partitionNames) {
         Map<String, Partition> result = new HashMap<>();
+        if (partitionNames == null || partitionNames.isEmpty()) {
+            return result;
+        }
         org.apache.hadoop.hive.metastore.api.Table table = getHiveTable(dbName, tableName);
+        List<String> existingPartitionNames =
+                getPartitionKeysByValue(dbName, tableName, HivePartitionValue.ALL_PARTITION_VALUES);
+        Set<String> existingPartitionNameSet = new HashSet<>(existingPartitionNames);
 
         for (String partitionName : partitionNames) {
-            Partition partition = SparkThriftServerConverter.createPartition(table, partitionName);
+            Partition partition = existingPartitionNameSet.contains(partitionName)
+                    ? buildPartition(table, partitionName)
+                    : null;
             result.put(partitionName, partition);
         }
 
@@ -237,13 +264,8 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
     private HivePartitionStats getTableStatisticsFromMetadata(String dbName, String tableName) {
         try {
             // Get the full table metadata which includes parameters
-            MetastoreTable metastoreTable = getMetastoreTable(dbName, tableName);
-            if (metastoreTable == null || metastoreTable.getTable() == null) {
-                return HivePartitionStats.empty();
-            }
-
-            Table table = metastoreTable.getTable();
-            Map<String, String> tableParams = table.getParameters();
+            org.apache.hadoop.hive.metastore.api.Table hiveTable = getHiveTable(dbName, tableName);
+            Map<String, String> tableParams = hiveTable.getParameters();
 
             if (tableParams == null || tableParams.isEmpty()) {
                 return HivePartitionStats.empty();
@@ -317,6 +339,44 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
         }
     }
 
+    private void normalizeHiveTableType(org.apache.hadoop.hive.metastore.api.Table hiveTable) {
+        String rawType = hiveTable.getTableType();
+        if (rawType == null) {
+            Map<String, String> params = hiveTable.getParameters();
+            if (params != null) {
+                rawType = params.get("table_type");
+            }
+        }
+
+        if (rawType == null) {
+            return;
+        }
+
+        String normalized = rawType.trim().toUpperCase(Locale.ROOT);
+        switch (normalized) {
+            case "MANAGED":
+            case "MANAGED_TABLE":
+                normalized = "MANAGED_TABLE";
+                break;
+            case "EXTERNAL":
+            case "EXTERNAL_TABLE":
+                normalized = "EXTERNAL_TABLE";
+                break;
+            case "VIEW":
+            case "VIRTUAL_VIEW":
+                normalized = "VIRTUAL_VIEW";
+                break;
+            case "MATERIALIZED VIEW":
+            case "MATERIALIZED_VIEW":
+                normalized = "MATERIALIZED_VIEW";
+                break;
+            default:
+                break;
+        }
+
+        hiveTable.setTableType(normalized);
+    }
+
     @Override
     public Map<String, HivePartitionStats> getPartitionStatistics(Table table, List<String> partitions) {
         // Basic partition statistics support
@@ -367,12 +427,12 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
 
     @Override
     public boolean partitionExists(Table table, List<String> partitionValues) {
-        try {
-            getPartition(table.getDbName(), table.getName(), partitionValues);
-            return true;
-        } catch (StarRocksConnectorException e) {
-            return false;
-        }
+        String dbName = table.getCatalogDBName();
+        String tableName = table.getCatalogTableName();
+        List<Optional<String>> optionalValues = partitionValues.stream()
+                .map(Optional::ofNullable)
+                .collect(Collectors.toList());
+        return !getPartitionKeysByValue(dbName, tableName, optionalValues).isEmpty();
     }
 
     @Override
@@ -395,5 +455,20 @@ public class SparkThriftServerMetastore implements IHiveMetastore {
     public void shutdown() {
         LOG.info("Shutting down SparkThriftServerMetastore for catalog: {}", catalogName);
         client.close();
+    }
+
+    private Partition buildPartition(org.apache.hadoop.hive.metastore.api.Table table, String partitionName) {
+        StorageDescriptor sd = new StorageDescriptor(table.getSd());
+        if (sd.getSerdeInfo() == null) {
+            sd.setSerdeInfo(new SerDeInfo());
+        }
+        if (sd.getSerdeInfo().getParameters() == null) {
+            sd.getSerdeInfo().setParameters(new HashMap<>());
+        }
+        String tableLocation = table.getSd().getLocation();
+        if (tableLocation != null && !tableLocation.isEmpty()) {
+            sd.setLocation(tableLocation + "/" + partitionName);
+        }
+        return HiveMetastoreApiConverter.toPartition(sd, new HashMap<>());
     }
 }

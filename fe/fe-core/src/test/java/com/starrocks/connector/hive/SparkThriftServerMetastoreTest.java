@@ -18,18 +18,23 @@ import com.google.common.collect.Lists;
 import com.starrocks.catalog.Database;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.metastore.MetastoreTable;
-import org.apache.hadoop.hive.metastore.api.Partition;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class SparkThriftServerMetastoreTest {
 
@@ -95,7 +100,7 @@ public class SparkThriftServerMetastoreTest {
         Database db = metastore.getDb("test_db");
 
         assertEquals("test_db", db.getFullName());
-        assertEquals("Test DB", db.getComment());
+        assertEquals("hdfs://path", db.getLocation());
     }
 
     @Test
@@ -114,8 +119,8 @@ public class SparkThriftServerMetastoreTest {
         MetastoreTable table = metastore.getMetastoreTable("test_db", "test_table");
 
         assertNotNull(table);
-        assertEquals("test_db", table.getTable().getDbName());
-        assertEquals("test_table", table.getTable().getTableName());
+        assertEquals("test_db", table.getDbName());
+        assertEquals("test_table", table.getTableName());
     }
 
     @Test
@@ -166,21 +171,18 @@ public class SparkThriftServerMetastoreTest {
                 .thenAnswer(invocation -> {
                     ResultSetProcessor<?> processor = invocation.getArgument(1);
                     java.sql.ResultSet rs = mock(java.sql.ResultSet.class);
-                    when(rs.next()).thenReturn(true, true, true, true, false);
+                    when(rs.next()).thenReturn(true, true, true, true, true, false);
                     when(rs.getString(1)).thenReturn("col1", "# Partition Information", "year",
-                            "# Detailed Table Information");
-                    when(rs.getString(2)).thenReturn("int", "", "int", "");
-                    when(rs.getString(3)).thenReturn("", "", "", "");
+                            "# Detailed Table Information", "Location");
+                    when(rs.getString(2)).thenReturn("int", "", "int", "", "hdfs://path/to/table");
+                    when(rs.getString(3)).thenReturn("", "", "", "", "");
                     return processor.process(rs);
                 });
 
         Partition partition = metastore.getPartition("test_db", "test_table", Lists.newArrayList("2023"));
 
         assertNotNull(partition);
-        assertEquals("test_db", partition.getDbName());
-        assertEquals("test_table", partition.getTableName());
-        assertEquals(1, partition.getValues().size());
-        assertEquals("2023", partition.getValues().get(0));
+        assertEquals("hdfs://path/to/table/year=2023", partition.getFullPath());
     }
 
     @Test
@@ -190,7 +192,19 @@ public class SparkThriftServerMetastoreTest {
                 .thenAnswer(invocation -> {
                     ResultSetProcessor<?> processor = invocation.getArgument(1);
                     java.sql.ResultSet rs = mock(java.sql.ResultSet.class);
-                    when(rs.next()).thenReturn(false);
+                    when(rs.next()).thenReturn(true, true, false);
+                    when(rs.getString(1)).thenReturn("# Detailed Table Information", "Location");
+                    when(rs.getString(2)).thenReturn("", "hdfs://path/to/table");
+                    when(rs.getString(3)).thenReturn("", "");
+                    return processor.process(rs);
+                });
+
+        when(mockConnection.executeQuery(eq("SHOW PARTITIONS test_db.test_table"), any()))
+                .thenAnswer(invocation -> {
+                    ResultSetProcessor<?> processor = invocation.getArgument(1);
+                    java.sql.ResultSet rs = mock(java.sql.ResultSet.class);
+                    when(rs.next()).thenReturn(true, true, false);
+                    when(rs.getString(1)).thenReturn("year=2023/month=01", "year=2023/month=02");
                     return processor.process(rs);
                 });
 
@@ -200,6 +214,10 @@ public class SparkThriftServerMetastoreTest {
         assertEquals(2, partitions.size());
         assertTrue(partitions.containsKey("year=2023/month=01"));
         assertTrue(partitions.containsKey("year=2023/month=02"));
+        assertNotNull(partitions.get("year=2023/month=01"));
+        assertNotNull(partitions.get("year=2023/month=02"));
+        assertEquals("hdfs://path/to/table/year=2023/month=01",
+                partitions.get("year=2023/month=01").getFullPath());
     }
 
     @Test

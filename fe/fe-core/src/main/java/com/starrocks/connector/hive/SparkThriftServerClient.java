@@ -14,7 +14,6 @@
 
 package com.starrocks.connector.hive;
 
-import com.starrocks.common.Config;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -111,15 +110,13 @@ public class SparkThriftServerClient {
 
         // Get timeout setting
         int timeout = Integer.parseInt(
-            properties.getOrDefault(SPARK_THRIFT_SERVER_TIMEOUT,
-                                  String.valueOf(DEFAULT_TIMEOUT_SECONDS))
-        );
+                properties.getOrDefault(SPARK_THRIFT_SERVER_TIMEOUT,
+                        String.valueOf(DEFAULT_TIMEOUT_SECONDS)));
 
         // Get pool size setting
         int poolSize = Integer.parseInt(
-            properties.getOrDefault(SPARK_THRIFT_SERVER_CONNECTION_POOL_SIZE,
-                                  String.valueOf(MAX_CONNECTION_POOL_SIZE_DEFAULT))
-        );
+                properties.getOrDefault(SPARK_THRIFT_SERVER_CONNECTION_POOL_SIZE,
+                        String.valueOf(MAX_CONNECTION_POOL_SIZE_DEFAULT)));
 
         return new SparkThriftServerClient(jdbcUrl, connProps, poolSize, timeout);
     }

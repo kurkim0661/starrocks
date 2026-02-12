@@ -185,7 +185,8 @@ public class SparkThriftServerConverter {
             return;
         }
 
-        switch (propName) {
+        String normalizedPropName = propName.trim();
+        switch (normalizedPropName) {
             case "Location":
                 sd.setLocation(propValue);
                 break;
@@ -201,7 +202,15 @@ public class SparkThriftServerConverter {
                 break;
             case "Provider":
             case "Table Properties":
-                parameters.put(propName, propValue);
+            case "Table Parameters":
+                parameters.put(normalizedPropName, propValue);
+                parseTableProperties(propValue, parameters);
+                break;
+            case "View Text":
+                table.setViewExpandedText(propValue);
+                break;
+            case "View Original Text":
+                table.setViewOriginalText(propValue);
                 break;
             case "Serde Library":
                 sd.getSerdeInfo().setSerializationLib(propValue);
@@ -213,10 +222,141 @@ public class SparkThriftServerConverter {
                 sd.setOutputFormat(propValue);
                 break;
             default:
-                if (!propName.startsWith("#")) {
-                    parameters.put(propName, propValue);
+                if (!normalizedPropName.startsWith("#")) {
+                    parameters.put(normalizedPropName, propValue);
                 }
         }
+    }
+
+    private static void parseTableProperties(String propValue, Map<String, String> parameters) {
+        if (propValue == null) {
+            return;
+        }
+        String normalized = propValue.trim();
+        if (normalized.isEmpty()) {
+            return;
+        }
+        if (normalized.startsWith("[") && normalized.endsWith("]")) {
+            normalized = normalized.substring(1, normalized.length() - 1).trim();
+        } else if (normalized.startsWith("Map(") && normalized.endsWith(")")) {
+            normalized = normalized.substring(4, normalized.length() - 1).trim();
+        }
+        if (normalized.isEmpty()) {
+            return;
+        }
+        for (String entry : splitTablePropertyEntries(normalized)) {
+            String trimmedEntry = entry.trim();
+            if (trimmedEntry.isEmpty()) {
+                continue;
+            }
+            String key;
+            String value;
+            int eqIndex = trimmedEntry.indexOf('=');
+            if (eqIndex >= 0) {
+                key = trimmedEntry.substring(0, eqIndex).trim();
+                value = trimmedEntry.substring(eqIndex + 1).trim();
+            } else {
+                int arrowIndex = trimmedEntry.indexOf("->");
+                if (arrowIndex < 0) {
+                    continue;
+                }
+                key = trimmedEntry.substring(0, arrowIndex).trim();
+                value = trimmedEntry.substring(arrowIndex + 2).trim();
+            }
+            if (!key.isEmpty()) {
+                parameters.putIfAbsent(key, stripOptionalQuotes(value));
+            }
+        }
+    }
+
+    private static List<String> splitTablePropertyEntries(String value) {
+        List<String> entries = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int bracketDepth = 0;
+        int braceDepth = 0;
+        int parenDepth = 0;
+        char quote = 0;
+        boolean escape = false;
+
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (quote != 0) {
+                current.append(c);
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+                if (c == '\\') {
+                    escape = true;
+                } else if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+
+            if (c == '\'' || c == '"') {
+                quote = c;
+                current.append(c);
+                continue;
+            }
+
+            switch (c) {
+                case '[':
+                    bracketDepth++;
+                    break;
+                case ']':
+                    if (bracketDepth > 0) {
+                        bracketDepth--;
+                    }
+                    break;
+                case '{':
+                    braceDepth++;
+                    break;
+                case '}':
+                    if (braceDepth > 0) {
+                        braceDepth--;
+                    }
+                    break;
+                case '(':
+                    parenDepth++;
+                    break;
+                case ')':
+                    if (parenDepth > 0) {
+                        parenDepth--;
+                    }
+                    break;
+                case ',':
+                    if (bracketDepth == 0 && braceDepth == 0 && parenDepth == 0) {
+                        entries.add(current.toString());
+                        current.setLength(0);
+                        continue;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            current.append(c);
+        }
+
+        if (current.length() > 0) {
+            entries.add(current.toString());
+        }
+        return entries;
+    }
+
+    private static String stripOptionalQuotes(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.length() >= 2) {
+            char first = trimmed.charAt(0);
+            char last = trimmed.charAt(trimmed.length() - 1);
+            if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
+                return trimmed.substring(1, trimmed.length() - 1);
+            }
+        }
+        return trimmed;
     }
 
     /**

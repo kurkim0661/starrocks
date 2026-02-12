@@ -14,6 +14,7 @@
 
 package com.starrocks.connector.hive;
 
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -22,10 +23,13 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Functional interface for processing ResultSet objects
@@ -46,6 +50,8 @@ public class SparkThriftServerClient {
     private final int maxPoolSize;
     private static final int MAX_CONNECTION_POOL_SIZE_DEFAULT = 32;
     private static final int DEFAULT_TIMEOUT_SECONDS = 600;
+    private static final ExecutorService NETWORK_TIMEOUT_EXECUTOR = Executors.newSingleThreadExecutor(
+            new ThreadFactoryBuilder().setDaemon(true).setNameFormat("spark-thrift-network-timeout-%d").build());
 
     // JDBC connection settings
     private final String jdbcUrl;
@@ -204,7 +210,13 @@ public class SparkThriftServerClient {
         try {
             LOG.info("Creating new connection to Spark Thrift Server: {}", jdbcUrl);
             Connection conn = DriverManager.getConnection(jdbcUrl, connectionProperties);
-            conn.setNetworkTimeout(null, connectionTimeout * 1000);
+            try {
+                conn.setNetworkTimeout(NETWORK_TIMEOUT_EXECUTOR, connectionTimeout * 1000);
+            } catch (SQLFeatureNotSupportedException e) {
+                LOG.debug("JDBC driver does not support setNetworkTimeout", e);
+            } catch (SQLException e) {
+                LOG.warn("Failed to set network timeout for Spark Thrift Server connection", e);
+            }
             return conn;
         } catch (SQLException e) {
             LOG.error("Failed to create connection to Spark Thrift Server", e);
